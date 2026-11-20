@@ -86,7 +86,10 @@ The skill activates automatically when the request matches its trigger (security
 ## Requirements
 
 - A coding agent with a model that supports tool use and parallel sub-agents
-- Node.js for the zero-dependency findings and coverage-ledger validators
+- Node.js for the zero-dependency findings and coverage-ledger validators. The validators run on
+  macOS, Linux, and Windows: where `O_NOFOLLOW` and `O_NONBLOCK` are unavailable, they reject
+  symlinks and non-regular inputs before opening, then re-check the opened descriptor, which is
+  slightly weaker than the flag-based path on POSIX
 - An OS-enforced sandbox for target-controlled builds, tests, processes, browsers, emulators, fuzzers, and fixtures. It must disable external networking, use a sanitized allowlisted environment, enforce resource limits, and allow writes only to assigned scratch paths. Without these controls, the workflow keeps the lead as `needs_validation` instead of executing target code.
 
 ## Design principles

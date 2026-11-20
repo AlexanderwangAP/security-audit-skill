@@ -11,6 +11,7 @@ const {
   isSafeAgentId,
   isSafeRelativePath,
   preflightJsonText,
+  readFileWithinLimitPortable,
   validateDocument,
 } = require("./validate-coverage-ledger.cjs");
 
@@ -736,5 +737,54 @@ test("accepts a canonical ID derived from near-maximum multibyte references", ()
   if (HAS_SAFE_INPUT_OPEN) {
     const result = runCli(JSON.stringify([value]));
     assert.equal(result.status, 0, cliOutput(result));
+  }
+});
+
+test("portable reader accepts a regular ledger file", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "validate-coverage-ledger-portable-"));
+  const file = path.join(directory, "coverage-ledger.json");
+  const contents = JSON.stringify([unit()]);
+  fs.writeFileSync(file, contents);
+  assert.equal(readFileWithinLimitPortable(file), contents);
+});
+
+test("portable reader rejects a symlink without following it", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "validate-coverage-ledger-portable-link-"));
+  const target = path.join(directory, "target.json");
+  const link = path.join(directory, "coverage-ledger.json");
+  fs.writeFileSync(target, JSON.stringify([unit()]));
+  fs.symlinkSync(target, link);
+  assert.throws(() => readFileWithinLimitPortable(link), /input must not be a symlink/);
+});
+
+test("portable reader rejects a directory and an oversized file", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "validate-coverage-ledger-portable-size-"));
+  assert.throws(() => readFileWithinLimitPortable(directory), /input must be a regular file/);
+  const big = path.join(directory, "big.json");
+  fs.writeFileSync(big, Buffer.alloc(LIMITS.inputBytes + 1, 0x20));
+  assert.throws(() => readFileWithinLimitPortable(big), /exceeds \d+ byte limit/);
+  fs.rmSync(big, { force: true });
+});
+
+test("falls back to the portable path when O_NOFOLLOW is unavailable", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "validate-coverage-ledger-dispatch-"));
+  const file = path.join(directory, "coverage-ledger.json");
+  const contents = JSON.stringify([unit()]);
+  fs.writeFileSync(file, contents);
+
+  const savedNoFollow = fs.constants.O_NOFOLLOW;
+  const savedNonBlock = fs.constants.O_NONBLOCK;
+  try {
+    fs.constants.O_NOFOLLOW = 0;
+    fs.constants.O_NONBLOCK = 0;
+    assert.equal(readFileWithinLimitPortable(file), contents);
+    assert.equal(
+      require("./validate-coverage-ledger.cjs").readFileWithinLimit(file),
+      contents,
+      "reader must not reject every input when the flags are missing",
+    );
+  } finally {
+    fs.constants.O_NOFOLLOW = savedNoFollow;
+    fs.constants.O_NONBLOCK = savedNonBlock;
   }
 });

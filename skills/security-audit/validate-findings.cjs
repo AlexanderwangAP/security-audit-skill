@@ -601,48 +601,69 @@ function loadSchema(schemaPath) {
   return schema;
 }
 
+function readAllBytes(descriptor) {
+  const chunks = [];
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  let bytesRead = 0;
+  while (true) {
+    const count = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+    if (count === 0) break;
+    bytesRead += count;
+    if (bytesRead > LIMITS.inputBytes) throw new SafeInputError(`input exceeds ${LIMITS.inputBytes} byte limit`);
+    chunks.push(Buffer.from(buffer.subarray(0, count)));
+  }
+  try {
+    return UTF8_DECODER.decode(Buffer.concat(chunks, bytesRead));
+  } catch {
+    throw new SafeInputError("input is not valid UTF-8");
+  }
+}
+
 function readFileWithinLimit(file) {
   const noFollow = fs.constants.O_NOFOLLOW;
   const nonBlock = fs.constants.O_NONBLOCK;
-  if (!Number.isInteger(noFollow) || noFollow === 0 || !Number.isInteger(nonBlock) || nonBlock === 0) {
-    throw new SafeInputError("OS no-follow and nonblocking input protection is unavailable");
-  }
+  const safeFlagsAvailable = Number.isInteger(noFollow) && noFollow !== 0 &&
+    Number.isInteger(nonBlock) && nonBlock !== 0;
+  if (!safeFlagsAvailable) return readFileWithinLimitPortable(file);
 
   let descriptor;
   try {
     descriptor = fs.openSync(file, fs.constants.O_RDONLY | noFollow | nonBlock);
   } catch (error) {
-    if (error && (error.code === "ELOOP" || error.code === "EMLINK")) {
-      throw new SafeInputError("input must not be a symlink");
-    }
+    if (error && (error.code === "ELOOP" || error.code === "EMLINK")) throw new SafeInputError("input must not be a symlink");
     throw error;
   }
   try {
     const stat = fs.fstatSync(descriptor);
-    if (!stat.isFile()) {
-      throw new SafeInputError("input must be a regular file");
-    }
-    if (stat.size > LIMITS.inputBytes) {
-      throw new SafeInputError(`input exceeds ${LIMITS.inputBytes} byte limit`);
-    }
+    if (!stat.isFile()) throw new SafeInputError("input must be a regular file");
+    if (stat.size > LIMITS.inputBytes) throw new SafeInputError(`input exceeds ${LIMITS.inputBytes} byte limit`);
+    return readAllBytes(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
 
-    const chunks = [];
-    const buffer = Buffer.allocUnsafe(64 * 1024);
-    let bytesRead = 0;
-    while (true) {
-      const count = fs.readSync(descriptor, buffer, 0, buffer.length, null);
-      if (count === 0) break;
-      bytesRead += count;
-      if (bytesRead > LIMITS.inputBytes) {
-        throw new SafeInputError(`input exceeds ${LIMITS.inputBytes} byte limit`);
-      }
-      chunks.push(Buffer.from(buffer.subarray(0, count)));
-    }
-    try {
-      return UTF8_DECODER.decode(Buffer.concat(chunks, bytesRead));
-    } catch {
-      throw new SafeInputError("input is not valid UTF-8");
-    }
+// Fallback for platforms that expose neither O_NOFOLLOW nor O_NONBLOCK, most
+// notably Windows, where the flags above are absent and opening every input
+// would be rejected. Symlinks and non-regular files are rejected before the
+// handle is opened, and the descriptor is compared against the pre-open stat
+// so a path swapped between the two calls is still caught. This is weaker than
+// O_NOFOLLOW: it cannot stop an in-place rewrite of the same inode while it is
+// being read, only replacement of the path by a different file or a symlink.
+function readFileWithinLimitPortable(file) {
+  const before = fs.lstatSync(file);
+  if (before.isSymbolicLink()) throw new SafeInputError("input must not be a symlink");
+  if (!before.isFile()) throw new SafeInputError("input must be a regular file");
+  if (before.size > LIMITS.inputBytes) throw new SafeInputError(`input exceeds ${LIMITS.inputBytes} byte limit`);
+
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY);
+  try {
+    const after = fs.fstatSync(descriptor);
+    if (!after.isFile()) throw new SafeInputError("input must be a regular file");
+    const sameDevice = before.dev === after.dev;
+    const sameInode = before.ino === 0 || after.ino === 0 || before.ino === after.ino;
+    if (!sameDevice || !sameInode) throw new SafeInputError("input changed while it was being opened");
+    return readAllBytes(descriptor);
   } finally {
     fs.closeSync(descriptor);
   }
