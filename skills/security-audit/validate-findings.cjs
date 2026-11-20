@@ -661,6 +661,7 @@ function readFileWithinLimitPortable(file) {
     const after = fs.fstatSync(descriptor);
     if (!after.isFile()) throw new SafeInputError("input must be a regular file");
     const sameDevice = before.dev === after.dev;
+    // Some filesystems report 0 for ino, so compare only when both sides report one.
     const sameInode = before.ino === 0 || after.ino === 0 || before.ino === after.ino;
     if (!sameDevice || !sameInode) throw new SafeInputError("input changed while it was being opened");
     return readAllBytes(descriptor);
